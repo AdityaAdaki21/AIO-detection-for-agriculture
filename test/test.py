@@ -5,7 +5,6 @@ from dotenv import load_dotenv, dotenv_values
 load_dotenv()
 client = Groq(
     api_key=os.environ.get("GROQ_API_KEY"),
-    # api_key= "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"
 )
 
 chat_completion = client.chat.completions.create(
