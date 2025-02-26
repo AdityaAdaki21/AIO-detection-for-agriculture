@@ -1,6 +1,7 @@
 # app.py
 import os
-from flask import Flask, render_template, request, jsonify, redirect, url_for, flash
+from flask import Flask, render_template, request, jsonify, redirect, url_for, flash, session
+import requests
 from werkzeug.utils import secure_filename
 import google.generativeai as genai
 from dotenv import load_dotenv
@@ -15,11 +16,11 @@ load_dotenv()
 
 # Configure the Gemini API
 # Try to get API key from environment variable, first from HF_SPACES then from .env file
-GOOGLE_API_KEY = os.getenv("HF_GOOGLE_API_KEY") or os.getenv("GOOGLE_API_KEY")
-if not GOOGLE_API_KEY:
-    raise ValueError("Google API Key not found. Set it as HF_GOOGLE_API_KEY in the Space settings.")
+GEMINI_API_KEY = os.getenv("HF_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
+if not GEMINI_API_KEY:
+    raise ValueError("Google API Key not found. Set it as GEMINI_API_KEY in the Space settings.")
 
-genai.configure(api_key=GOOGLE_API_KEY)
+genai.configure(api_key=GEMINI_API_KEY)
 
 # Setup the Gemini model
 model = genai.GenerativeModel('gemini-1.5-flash')
@@ -42,6 +43,67 @@ def allowed_file(filename):
 def encode_image(image_path):
     with open(image_path, "rb") as image_file:
         return base64.b64encode(image_file.read()).decode('utf-8')
+
+def get_web_pesticide_info(disease, plant_type="Unknown"):
+    """Fetch pesticide information from web sources for a specific disease and plant type"""
+    query = f"site:agrowon.esakal.com {disease} in {plant_type}"
+    url = "https://www.googleapis.com/customsearch/v1"
+    params = {
+        "key": os.getenv("GOOGLE_API_KEY"),
+        "cx": os.getenv("GOOGLE_CX"),
+        "q": query,
+        "num": 3
+    }
+    try:
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        data = response.json()
+        if "items" in data and len(data["items"]) > 0:
+            item = data["items"][0]
+            return {
+                "title": item.get("title", "No title available"),
+                "link": item.get("link", "#"),
+                "snippet": item.get("snippet", "No snippet available"),
+                "summary": item.get("snippet", "No snippet available")
+            }
+    except Exception as e:
+        print(f"Error retrieving web pesticide info: {str(e)}")
+    return None
+
+def get_more_web_info(query):
+    """Get more general web information based on a search query"""
+    url = "https://www.googleapis.com/customsearch/v1"
+    params = {
+        "key": os.getenv("GOOGLE_API_KEY"),
+        "cx": os.getenv("GOOGLE_CX"),
+        "q": query,
+        "num": 3
+    }
+    try:
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        data = response.json()
+        results = []
+        if "items" in data:
+            for item in data["items"]:
+                results.append({
+                    "title": item.get("title", "No title available"),
+                    "link": item.get("link", "#"),
+                    "snippet": item.get("snippet", "No snippet available")
+                })
+        return results
+    except Exception as e:
+        print(f"Error retrieving additional articles: {str(e)}")
+    return []
+
+def get_commercial_product_info(recommendation, disease_name):
+    """Fetch commercial product information related to a pesticide recommendation"""
+    indiamart_query = f"site:indiamart.com pesticide '{disease_name}' '{recommendation}'"
+    krishi_query = f"site:krishisevakendra.in/products pesticide '{disease_name}' '{recommendation}'"
+    indiamart_results = get_more_web_info(indiamart_query)
+    krishi_results = get_more_web_info(krishi_query)
+    return indiamart_results + krishi_results
+
 
 def analyze_plant_image(image_path, plant_name):
     try:
@@ -170,13 +232,31 @@ def analyze():
                     os.remove(file_path)
                 return redirect(url_for('index'))
             
+            # Get additional web information for detected diseases/pests
+            web_info = {}
+            product_info = {}
+            
+            if not analysis_result.get('is_healthy', False) and 'results' in analysis_result:
+                for result in analysis_result['results']:
+                    disease_name = result.get('name', '')
+                    if disease_name:
+                        # Get web information about the disease
+                        web_info[disease_name] = get_web_pesticide_info(disease_name, plant_name)
+                        
+                        # Get commercial product information for treatment
+                        treatment = result.get('treatment', '')
+                        if treatment:
+                            product_info[disease_name] = get_commercial_product_info(treatment, disease_name)
+            
             # Now we need to handle the file - since we've already analyzed it,
             # we can delete it immediately after rendering the template
             response = render_template(
                 'results.html',
                 results=analysis_result,
                 plant_name=plant_name,
-                image_path=file_path.replace('static/', '', 1)
+                image_path=file_path.replace('static/', '', 1),
+                web_info=web_info,
+                product_info=product_info
             )
             
             # Schedule the file for deletion (will be deleted after rendering)
@@ -208,6 +288,7 @@ def analyze():
     
     flash('Invalid file type. Please upload an image (png, jpg, jpeg, gif).')
     return redirect(url_for('index'))
+
 
 # Hugging Face Spaces requires the app to be available on port 7860
 if __name__ == '__main__':
