@@ -14,14 +14,18 @@ import time
 load_dotenv()
 
 # Configure the Gemini API
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+# Try to get API key from environment variable, first from HF_SPACES then from .env file
+GOOGLE_API_KEY = os.getenv("HF_GOOGLE_API_KEY") or os.getenv("GOOGLE_API_KEY")
+if not GOOGLE_API_KEY:
+    raise ValueError("Google API Key not found. Set it as HF_GOOGLE_API_KEY in the Space settings.")
+
 genai.configure(api_key=GOOGLE_API_KEY)
 
 # Setup the Gemini model
 model = genai.GenerativeModel('gemini-1.5-flash')
 
 app = Flask(__name__)
-app.secret_key = os.getenv("SECRET_KEY", "default-secret-key")
+app.secret_key = os.getenv("SECRET_KEY", "your-default-secret-key-for-flash-messages")
 
 # Configure upload folder
 UPLOAD_FOLDER = 'static/uploads'
@@ -110,11 +114,14 @@ def analyze_plant_image(image_path, plant_name):
             "results": []
         }
 
-def cleanup_old_files(directory, max_age_hours=24):
+def cleanup_old_files(directory, max_age_hours=1):  # Reduced to 1 hour for Hugging Face
     """Remove files older than the specified age from the directory"""
     while True:
         now = datetime.now()
         for filename in os.listdir(directory):
+            if filename == '.gitkeep':  # Skip the .gitkeep file
+                continue
+                
             file_path = os.path.join(directory, filename)
             file_age = now - datetime.fromtimestamp(os.path.getctime(file_path))
             if file_age > timedelta(hours=max_age_hours):
@@ -123,8 +130,8 @@ def cleanup_old_files(directory, max_age_hours=24):
                     print(f"Removed old file: {file_path}")
                 except Exception as e:
                     print(f"Error removing {file_path}: {e}")
-        # Sleep for an hour before checking again
-        time.sleep(3600)
+        # Sleep for 5 minutes before checking again
+        time.sleep(300)  # 5 minutes
 
 @app.route('/', methods=['GET'])
 def index():
@@ -174,7 +181,7 @@ def analyze():
             
             # Schedule the file for deletion (will be deleted after rendering)
             # We use a small delay to ensure the file is available for initial page load
-            def delete_file_after_delay(path, delay=10):
+            def delete_file_after_delay(path, delay=30):  # Increased delay for Hugging Face
                 time.sleep(delay)
                 if os.path.exists(path):
                     try:
@@ -202,9 +209,12 @@ def analyze():
     flash('Invalid file type. Please upload an image (png, jpg, jpeg, gif).')
     return redirect(url_for('index'))
 
+# Hugging Face Spaces requires the app to be available on port 7860
 if __name__ == '__main__':
     # Start the cleanup thread when the app starts
     cleanup_thread = threading.Thread(target=cleanup_old_files, args=(app.config['UPLOAD_FOLDER'],), daemon=True)
     cleanup_thread.start()
     
-    app.run(debug=True)
+    # Get the port from environment variable for Hugging Face Spaces compatibility
+    port = int(os.environ.get("PORT", 7860))
+    app.run(host='0.0.0.0', port=port)
